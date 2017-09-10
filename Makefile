@@ -1,10 +1,13 @@
-.PHONY: test
+.PHONY: test cli
 
-CFLAGS := -DDEBUG 
+CFLAGS := -DDEBUG -Wall
 
-all: test
+all: test cli
 
 test:
 	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) jsmn.c test.c $(LDLIBS) -lcurl -g2
 
-clean : rm test *.o
+cli:
+	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) jsmn.c cli.c $(LDLIBS) -lcurl -g2
+
+clean : rm test cli *.o

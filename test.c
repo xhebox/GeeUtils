@@ -4,8 +4,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-
-#define die(a) fprintf(stderr, "%s\n", a);
 int main() {
 	srand(time(NULL));
 
@@ -17,9 +15,9 @@ int main() {
 		mkdir(workdir, 0700);
 	}
 
-	prepare(l, workdir);
+	prepare(l, workdir, "https://passport.bilibili.com/captcha/gc?cType=2&ts=%lu");
 
-	int xpos = find_xpos(workdir, atoi(l->ypos));
-
+	//refresh(l, workdir);
+	//int xpos = find_xpos(workdir, atoi(l->ypos));
 	cleanup(l);
 }
