@@ -10,4 +10,5 @@ test:
 cli:
 	$(CC) -o $@ $(CFLAGS) $(CPPFLAGS) $(LDFLAGS) jsmn.c cli.c $(LDLIBS) -lcurl -g2
 
-clean : rm test cli *.o
+clean:
+	rm -f test cli *.o

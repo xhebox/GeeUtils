@@ -6,39 +6,33 @@
 #include <errno.h>
 
 #define MAX_MOUSE_DATA_COUNT 512
+bool debug = true;
+bool info = true;
+bool error = true;
 
 // from clib/logfmt
-bool quiet = false;
 #define clean_errno() (errno == 0 ? "None" : strerror(errno))
-#define log_debug(M, ...) if(!quiet) fprintf(stdout, "\33[34mDEBUG\33[90m (%s:%d)[%s]\33[39m " M "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__);
-#define log_error(M, ...) if(!quiet) fprintf(stdout, "\33[31mERR\33[90m (%s:%d)[%s], errno: %s\33[39m " M "\n", __FILE__, __LINE__, __func__, clean_errno(), ##__VA_ARGS__);
-#define log_info(M, ...) if(!quiet) fprintf(stdout, "\33[32mINFO\33[90m (%s:%d)[%s]\33[39m " M "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__);
+#define log_debug(M, ...) if(debug) fprintf(stdout, "\33[34mDEBUG\33[90m (%s:%d)[%s]\33[39m " M "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__);
+#define log_error(M, ...) if(error) fprintf(stderr, "\33[31mERR\33[90m (%s:%d)[%s], errno: %s\33[39m " M "\n", __FILE__, __LINE__, __func__, clean_errno(), ##__VA_ARGS__);
+#define log_info(M, ...) if(info) fprintf(stdout, "\33[32mINFO\33[90m (%s:%d)[%s]\33[39m " M "\n", __FILE__, __LINE__, __func__, ##__VA_ARGS__);
 
-typedef struct login {
-	char hash[64];
-	char key[512];
-	char gt[64];
-	char challenge[64];
-	char path[256]; // jspath
-	char id[64];
-	char slice[64];
-	char fullbg[64];
-	char bg[64];
-	char ypos[12];
-} login;
-
-// para: input key, output[52](caller prepared, not malloc]
+// para: input key, output[52](caller prepared, not malloc, can be NULL]
 void imgoff(const char*, int*);
 // para: width, height, channels, input uint8_t[][channels]
 // return: pointer to uint8_t[][channels], need to free
 void* recover_img(int, int, int, const void*);
 
-// para: workdir path, ypos from server
+// para: ypos, bg path, fullbg path, slice path, workdir path
 // return: possible xpos
-int find_xpos(const char*, int);
+int find_xpos(int ypos, const char*, const char*, const char*, const char*);
+
 // para: xpos, challenge token
 // return: userresponse string, need to free
 char* enc_xpos(int, const char*);
+
+// para: xpos, output[][x, y, t](need to free)
+// return: output count
+int fake_mouse(int xpos, int(**n)[3]);
 
 // para: input[][x,y,time], array count, output[][delta x, delta y, delta time](need to free)
 // return: output count
@@ -48,11 +42,18 @@ int diff_mouse(int (*)[3], int, int (**)[3]);
 int undiff_mouse(int (*)[3], int, int (**)[3]);
 
 // para: input[][delta x, delta y, delta time], count
-// return: a arg, need to free
+// return: (unenc)a arg, need to free
 char* serialize_mouse(int (*)[3], int);
-// para: a arg, output[][delta x, delta y, delta time](need to free, when NULL, count only)
+// para: (unenc)a arg, output[][delta x, delta y, delta time](need to free, when NULL, count only)
 // return: count, need to free
 int unserialize_mouse(const char*, int (**)[3]);
+
+// para: unenc a arg, charcode strings from server, array data from server
+// return: (enc)a arg, need to free
+char* enc_mouse(const char*, const char*, const int*);
+// para: enc a arg, charcode strings from server, array data from server
+// return: (unenc)a arg, need to free
+char* dec_mouse(const char*, const char*, const int*);
 
 // para: input, output arr[caller prepared, not malloc]
 // return: encoded len
@@ -66,22 +67,36 @@ int decuricomp(const char*, int, char*);
 // return: decoded len
 int decuri(const char*, int, char *);
 
+typedef struct login login;
+// para: referer url
 // return: login struct
-login* init();
+login* init(const char*);
 // para: login struct
 void cleanup(login*);
 
-// return encdata or encdata length or xor key
-char* get_encdata();
-int get_encdata_len();
-char* get_encdata_key();
+// return encdata or encdata length or xor key, or some internal data pointer
+const char* get_encdata();
+const int get_encdata_len();
+const char* get_encdata_key();
+const int get_ypos(login*);
+const char* get_bg(login*);
+const char* get_fullbg(login*);
+const char* get_slice(login*);
+const char* get_s(login*);
+const int* get_c(login*);
+const char* get_id(login*);
+const char* get_key(login*);
+const char* get_hash(login*);
+const char* get_gt(login*);
+const char* get_challenge(login*);
 
 // para: input data, input len, xor key, output arr[need to free, when NULL, count only]
 // return: output count
 int dec_encdata(const char *, int, const char *, char**); 
-
-// para: login struct, workdir path(writeable), which url to get gt/challenge
-void prepare(login*, const char*, const char*);
+// para: login struct, which url to get gt/challenge
+void token(login*, const char*);
+// para: login struct, workdir path(writeable)
+void prepare(login*, const char*);
 // para: login struct, workdir path(writeable)
 void refresh(login*, const char*);
 // para: login struct, userresponse, a arg, imgload time, passtime
@@ -98,16 +113,32 @@ void verify(login*, const char*, const char*, unsigned, unsigned);
 #include <stdlib.h>
 #include <limits.h>
 #include <math.h>
-#include <curl/curl.h>
 #include <ctype.h>
 #include <regex.h>
+#include <curl/curl.h>
+#include <libgen.h>
 #include "jsmn.h"
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#ifdef DEBUG
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
-#endif
+
+struct login {
+	char hash[64];
+	char key[512];
+	char gt[64];
+	char challenge[64];
+	char path[256]; // jspath
+	char id[64];
+	char slice[64];
+	char fullbg[64];
+	char bg[64];
+	int ypos;
+	int c[9]; // c&s are two args related to
+	char s[12]; // 6.0.0 
+	CURL* curl;
+	struct curl_slist *header;
+};
 
 char uricomp[256] = {0};
 bool encode_i = false;
@@ -171,7 +202,7 @@ void imgoff(const char *input, int *ret) {
 	for (int b=0; b < 13; b++, token = strchr(token, '_')+1) {
 		a[b] = atoi(token);
 	}
-	for (int h=9, l=0; (h*(h+1)%2+7) && l < 52; l++) {
+	for (int l=0; l < 52; l++) {
 		int c = 2 * a[l%26/2] + l%2;
 		if (!( (l/2) % 2)) {
 			c += l%2 ? -1 : 1;
@@ -179,24 +210,25 @@ void imgoff(const char *input, int *ret) {
 		c += l < 26 ? 26 : 0;
 		if (ret) ret[l] = c;
 		off_n[l] = c;
-		h = h > 68872 ? h/2 : h*2;
 	}
+	off_s = true;
 	log_info("refreshed the default image offset data");
-#ifdef DEBUG
-	char buf[52*3] = {0};
-	int bc=0;
-	for (int a=0; a < sizeof(off_n); a++) {
-		bc += snprintf(&buf[bc], sizeof(buf)-bc, "%d ", off_n[a]);
+
+	if(debug) {
+		char buf[52*3] = {0};
+		int bc=0;
+		for (int a=0; a < sizeof(off_n); a++) {
+			bc += snprintf(&buf[bc], sizeof(buf)-bc, "%d ", off_n[a]);
+		}
+		log_debug("image offset: [ %s]", buf);
 	}
-	log_debug("image offset: [ %s]", buf);
-#endif
 }
 
 void* recover_img(int w, int h, int n, const void *in) {
-	int off[52] = {39,38,48,49,41,40,46,47,35,34,50,51,33,32,28,29,27,26,36,37,31,30,44,45,43,42,12,13,23,22,14,15,21,20,8,9,25,24,6,7,3,2,0,1,11,10,4,5,19,18,16,17};
-	if (off_s) {
-		log_error("fall back to default image offset data, use prepare() to set offset if that's your case");
-	} else memcpy(&off[0], &off_n[0], sizeof(off_n));
+	uint8_t off[52] = {39,38,48,49,41,40,46,47,35,34,50,51,33,32,28,29,27,26,36,37,31,30,44,45,43,42,12,13,23,22,14,15,21,20,8,9,25,24,6,7,3,2,0,1,11,10,4,5,19,18,16,17};
+	if (!off_s) {
+		log_info("fall back to default image offset data, use prepare() to set offset if that's your case");
+	} else memcpy(off, off_n, sizeof(off_n));
 
 	int rw = w-sizeof(off_n);
 	uint8_t *out = calloc(1, rw*h*n);
@@ -221,7 +253,7 @@ void* recover_img(int w, int h, int n, const void *in) {
 	return out;
 }
 
-int find_xpos(const char *workdir, int ypos) {
+int find_xpos(int ypos, const char *bgp, const char *fbgp, const char *slp, const char* workdir) {
 	log_info("workdir: %s, ypos: %d", workdir, ypos);
 	char bg_path[PATH_MAX];
 	char fbg_path[PATH_MAX];
@@ -230,9 +262,9 @@ int find_xpos(const char *workdir, int ypos) {
 	char dec_fbg_path[PATH_MAX];
 	char dec_slice_path[PATH_MAX];
 	assert(strlen(workdir) < PATH_MAX-20);
-	snprintf(bg_path, sizeof(bg_path), "%s/bg.png", workdir);
-	snprintf(fbg_path, sizeof(fbg_path), "%s/fullbg.png", workdir);
-	snprintf(slice_path, sizeof(slice_path), "%s/slice.png", workdir);
+	snprintf(bg_path, sizeof(bg_path), "%s/%s", workdir, bgp);
+	snprintf(fbg_path, sizeof(fbg_path), "%s/%s", workdir, fbgp);
+	snprintf(slice_path, sizeof(slice_path), "%s/%s", workdir, slp);
 	snprintf(dec_bg_path, sizeof(bg_path), "%s/dec_bg.png", workdir);
 	snprintf(dec_fbg_path, sizeof(fbg_path), "%s/dec_fbg.png", workdir);
 	snprintf(dec_slice_path, sizeof(slice_path), "%s/dec_slice.png", workdir);
@@ -250,9 +282,9 @@ int find_xpos(const char *workdir, int ypos) {
 		log_error("can not recover image %s", bg_path);
 		return -1;
 	}
-#ifdef DEBUG
-	stbi_write_png(dec_bg_path, bg_w-sizeof(off_n), bg_h, bg_n, &dbg[0][0][0], (bg_w-sizeof(off_n))*bg_n);
-#endif
+	if(debug) {
+		stbi_write_png(dec_bg_path, bg_w-sizeof(off_n), bg_h, bg_n, &dbg[0][0][0], (bg_w-sizeof(off_n))*bg_n);
+	}
 
 	int fbg_w=0, fbg_h=0, fbg_n=0;
 	r = stbi_load(fbg_path, &fbg_w, &fbg_h, &fbg_n, 3);
@@ -266,9 +298,9 @@ int find_xpos(const char *workdir, int ypos) {
 		log_error("can not recover image %s", fbg_path);
 		return -1;
 	}
-#ifdef DEBUG
-	stbi_write_png(dec_fbg_path, fbg_w-sizeof(off_n), fbg_h, fbg_n, &dfbg[0][0][0], (fbg_w-sizeof(off_n))*fbg_n);
-#endif
+	if(debug) {
+		stbi_write_png(dec_fbg_path, fbg_w-sizeof(off_n), fbg_h, fbg_n, &dfbg[0][0][0], (fbg_w-sizeof(off_n))*fbg_n);
+	}
 
 	int slice_w=0, slice_h=0, slice_n=0;
 	r = stbi_load(slice_path, &slice_w, &slice_h, &slice_n, 4);
@@ -281,9 +313,9 @@ int find_xpos(const char *workdir, int ypos) {
 		for (int b=0; b < slice_w; b++)
 			if (slice[a][b][3] < 255) slice[a][b][3] = 0;
 	}
-#ifdef DEBUG
-	stbi_write_png(dec_slice_path, slice_w, slice_h, slice_n, slice, slice_w*slice_n);
-#endif
+	if(debug) {
+		stbi_write_png(dec_slice_path, slice_w, slice_h, slice_n, slice, slice_w*slice_n);
+	}
 
 	unsigned xpos=0;
 	double dark=0;
@@ -291,14 +323,13 @@ int find_xpos(const char *workdir, int ypos) {
 		double cur=0;
 		for (int b=ypos, e=ypos+slice_h; b < e; b++) {
 			for (int c=a, f=a+slice_w; c < f; c++) {
-					HSV dbg_hsv = rgb_hsv(dbg[b][c][0], dbg[b][c][1], dbg[b][c][2]);
-					HSV dfbg_hsv = rgb_hsv(dfbg[b][c][0], dfbg[b][c][1], dfbg[b][c][2]);
-					cur+=fabs(dfbg_hsv.v-dbg_hsv.v);
+				HSV dbg_hsv = rgb_hsv(dbg[b][c][0], dbg[b][c][1], dbg[b][c][2]);
+				HSV dfbg_hsv = rgb_hsv(dfbg[b][c][0], dfbg[b][c][1], dfbg[b][c][2]);
+				cur+=fabs(dfbg_hsv.v-dbg_hsv.v);
 			}
 		}
-#ifdef DEBUG
 		log_debug("xpos %u, most dark weight %f", a, cur);
-#endif
+
 		if (cur > dark) {
 			dark = cur;
 			xpos = a;
@@ -307,7 +338,7 @@ int find_xpos(const char *workdir, int ypos) {
 	log_info("first loop: initial xpos %u, most dark weight %f", xpos, dark);
 
 	dark=0;
-	for (int a=xpos-5, b=xpos+5; a < b; a++) {
+	for (int a=xpos > 5 ? xpos-5 : xpos, b=xpos > 5 ? xpos+5 : xpos+10; a < b; a++) {
 		double cur=0;
 		for (int y=0, e=slice_h, yd=ypos; y < e; y++, yd++) {
 			for (int x=0, f=slice_w, xd=a; x < f; x++, xd++) {
@@ -318,9 +349,8 @@ int find_xpos(const char *workdir, int ypos) {
 				}
 			}
 		}
-#ifdef DEBUG
 		log_debug("xpos %u, most dark weight %f", a, cur);
-#endif
+
 		if (cur > dark) {
 			dark = cur;
 			xpos = a;
@@ -343,15 +373,11 @@ char* enc_xpos(int xpos, const char *challenge) {
 	for (int a=0, b=clen-32; a < b; a++) {
 		assert(a < sizeof(d));
 		d[a] = challenge[a+32] > 57 ? challenge[a+32] - 87 : challenge[a+32] - 48;
-#ifdef DEBUG
-		log_debug("d[%d] = %d\n", a, d[a]);
-#endif
+		log_debug("d[%d] = %d", a, d[a]);
 	}
 
 	int g = xpos + 36 * d[0] + d[1];
-#ifdef DEBUG
-	log_debug("var g = %d\n", g);
-#endif
+	log_debug("var g = %d", g);
 
 	bool j[128] = {0};
 	char i[5][7] = {0};
@@ -360,14 +386,10 @@ char* enc_xpos(int xpos, const char *challenge) {
 		char h = challenge[a];
 		if (!j[(int)h]) {
 			j[(int)h] = true;
-#ifdef DEBUG
-			log_debug("j[%c] = true\n", h);
-#endif
+			log_debug("j[%c] = true", h);
 
 			i[k][ic[k]++] = h;
-#ifdef DEBUG
-			log_debug("i[%d].push(%c)\n", k, h);
-#endif
+			log_debug("i[%d].push(%c)", k, h);
 			if (5 == ++k) k = 0;
 		}
 	}
@@ -379,22 +401,79 @@ char* enc_xpos(int xpos, const char *challenge) {
 		if ( n - q[o] >= 0 ) {
 			int m = rand1() * ic[o];
 			p[pc++] = i[o][m];
-#ifdef DEBUG
-			log_debug("p += i[%d][%d] -> %s\n", o, m, p);
-#endif
+			log_debug("p += i[%d][%d] -> %s", o, m, p);
 			n -= q[o];
 		} else o--;
 	}
 
-	log_info("userresponse(%u): %s\n", pc, p);
+	log_info("userresponse(%u): %s", pc, p);
 	char *ret = calloc(1, pc+1);
 	if (!ret) {
-		log_error("failed to calloc(1, %d)\n", pc);
+		log_error("failed to calloc(1, %d)", pc);
 		return NULL;
 	} else {
 		snprintf(ret, pc+1, "%*s", pc, p);
 		return ret;
 	}
+}
+
+int fake_mouse(int xpos, int(**n)[3]) {
+	int (*o)[3] = calloc(1, MAX_MOUSE_DATA_COUNT*3*sizeof(int));
+	o[0][0]=-lround(rand1()*15)-15;
+	o[0][1]=-lround(rand1()*15)-15;
+	o[0][2]=0;
+	o[1][0]=o[1][1]=o[1][2]=0;
+	o[2][0]=o[2][1]=1;
+	o[2][2]=lround(rand1()*15)+40;
+	double x = 1;
+	double y = 1;
+	double t = o[2][2];
+ 	int c=3;
+	for(;x>=0 && x<260;c++) {
+		// adjust step
+		if((xpos-lround(x)) >= lround(xpos*2/3)) {
+			x += lround(nearbyint(rand1()*xpos/100))+4;
+			t += lround(nearbyint(rand1()*5)) + 5;
+			log_debug("fast step");
+		}	else {
+			x += lround(nearbyint(rand1()*xpos/100))+lround(rand1()*2);
+			t += lround(nearbyint(rand1()*5)) + 15;
+			log_debug("slow step");
+		}
+
+		// random shake
+		for(int a=0;nearbyint(rand1());a++) {
+			if(a == 2) {
+				y += lround(nearbyint(rand1()));
+				break;
+			}
+		}
+		
+		int xx = lround(nearbyint(x));
+		int yy = lround(nearbyint(y));
+		int tt = lround(nearbyint(t));
+		o[c][0] = xx;
+		o[c][1] = yy;
+		o[c][2] = tt;
+
+		// hit target
+		if(xpos-xx <= 2) {
+			o[c][0] = xpos;
+			break;
+		}
+
+		log_debug("track: [ %d, %d, %d ]", o[c][0], o[c][1], o[c][2]);
+	}
+#if 0
+	for(int end=lround(nearbyint(rand1()*4))+c;c < end; c++) {
+		o[c][0] = o[c-1][0];
+		o[c][1] = o[c-1][1];
+		o[c][2] = lround(nearbyint(rand1()*100)) + o[c-1][2];
+		log_debug("final proc: [ %d, %d, %d ]", o[c][0], o[c][1], o[c][2]);
+	}	
+#endif
+	*n = o;
+	return c;
 }
 
 int diff_mouse(int (*m)[3], int mc, int (**n)[3]) {
@@ -420,9 +499,7 @@ int diff_mouse(int (*m)[3], int mc, int (**n)[3]) {
 				e[la][0] = g[0];
 				e[la][1] = g[1];
 				e[la][2] = g[2] + f;
-#ifdef DEBUG
 				log_debug("e.push([%d, %d, %d])", e[la][0], e[la][1], e[la][2]);
-#endif
 				la++;
 				f=0;
 			}
@@ -434,9 +511,7 @@ int diff_mouse(int (*m)[3], int mc, int (**n)[3]) {
 		e[la][0] = g[0];
 		e[la][1] = g[1];
 		e[la][2] = f;
-#ifdef DEBUG
 		log_debug("e.lastpush([%d, %d, %d])", e[la][0], e[la][1], e[la][2]);
-#endif
 		la++;
 	}
 
@@ -455,22 +530,18 @@ int undiff_mouse(int (*m)[3], int mc, int (**n)[3]) {
 	log_info("input count %d", mc);
 	e[0][0] = -m[0][0];
 	e[0][1] = -m[0][1];
-	e[1][0]=e[1][1]=e[1][2]=0;
-#ifdef DEBUG
 	log_debug("e.push([%d, %d, %d])", e[0][0], e[0][1], e[0][2]);
+	e[1][0]=e[1][1]=e[1][2]=0;
 	log_debug("e.push([%d, %d, %d])", e[1][0], e[1][1], e[1][2]);
-#endif
 	for (int a=2, b=mc+1; a < b; a++) {
-		e[a][0] = e[a-1][0] + m[a][0];
-		e[a][1] = e[a-1][1] + m[a][1];
-		e[a][2] = e[a-1][2] + m[a][2];
-#ifdef DEBUG
+		e[a][0] = e[a-1][0] + m[a-1][0];
+		e[a][1] = e[a-1][1] + m[a-1][1];
+		e[a][2] = e[a-1][2] + m[a-1][2];
 		log_debug("e.push([%d, %d, %d])", e[a][0], e[a][1], e[a][2]);
-#endif
 	}
 
 	*n = e;
-	log_info("e.length == %d", mc+1);
+	log_info("undiffed: e.length == %d", mc+1);
 	return mc+1;
 }
 
@@ -516,32 +587,26 @@ char* serialize_mouse(int (*f)[3], int count) {
 
 	for (int j=0; j < count; j++) {
 		char b = e(&f[j][0]);
-#ifdef DEBUG
 		const char *start = g;
-#endif
+		int sg = gc;
+		int sh = hc;
+		int si = ic;
 		if (b) {
 			assert(hc < sizeof(h));
 			h[hc++] = b;
-#ifdef DEBUG
 			log_debug("h.push('%c')", b);
-#endif
 		} else {
 			d(f[j][0], g, &gc);
-#ifdef DEBUG
-			log_debug("g.push(d(f[%d][0]) -> %s)", j, start);
+			log_debug("g.push(d(f[%d][0]) -> %.*s)", j, gc-sg, start);
 			start = h;
-#endif
+
 			d(f[j][1], h, &hc);
-#ifdef DEBUG
-			log_debug("h.push(d(f[%d][1]) -> %s)", j, start);
+			log_debug("h.push(d(f[%d][0]) -> %.*s)", j, hc-sh, start);
 			start = i;
-#endif
 		}
 
 		d(f[j][2], i, &ic);
-#ifdef DEBUG
-		log_debug("i.push(d(f[%d][2]) -> %s)", j, start);
-#endif
+		log_debug("i.push(d(f[%d][2]) -> %.*s)", j, ic-si, start);
 	}
 	char *r = calloc(1, gc+hc+ic+5);
 	if (!r) {
@@ -602,9 +667,7 @@ int unserialize_mouse(const char* in, int (**out)[3]) {
 	const char *i = strstr(h, "!!");
 	assert(i);
 	i += 2;
-#ifdef DEBUG
 	log_debug("\ng: %.*s\nh: %.*s\ni: %s", (int)(h-g-2), g, (int)(i-h-2), h, i);
-#endif
 	int count = 0;
 
 	for (int a=0, f=i-h-2; a < f;) {
@@ -619,6 +682,8 @@ int unserialize_mouse(const char* in, int (**out)[3]) {
 		}
 	}
 
+
+	log_info("frame count: %d", count);
 	if (out != NULL) {
 		int (*p)[3] = calloc(1, sizeof(int)*3*count);
 		if (!p) {
@@ -650,15 +715,71 @@ int unserialize_mouse(const char* in, int (**out)[3]) {
 				hc++;
 				ic+=skip;
 			}
-#ifdef DEBUG
 			log_debug("p.push([ %d, %d, %d ]);", p[a][0], p[a][1], p[a][2]);
-#endif
 		}
 
 		*out = p;
 	}
 	log_info("unserialized, count: %d", count);
 	return count;
+}
+
+char* enc_mouse(const char *m, const char *token, const int *arr) {
+	if (!arr || !token) {
+		return NULL;
+	}           
+
+	int len = strlen(m);
+	log_info("input len %d", len);
+	char *o = calloc(1, len+5);
+	if (!o) {
+		log_error("cant calloc(1, %d+5)", len);
+		exit(1);
+	}
+
+	snprintf(o, len+5, "%s", m);
+	for (int j=0, a=arr[0], b=arr[2], c=arr[4], cl=strlen(o); *(token+j); j+=2, cl=strlen(o)) {
+		unsigned d = 0;
+		sscanf(token+j, "%2x", &d);
+		int off = (a * d * d + b * d + c) % len;
+		memmove(o+off+1, o+off, cl-off+1);
+		o[off] = (char)d; 
+		log_debug("char '%c' inserted at %d", o[off], off);
+	}
+	log_info("enc a arg: %s", o);
+	return o; 
+}
+
+char* dec_mouse(const char *m, const char *token, const int *arr) {
+	if (!arr || !token) {
+		return NULL;
+	}           
+
+	int len = strlen(m);
+	log_info("input len %d", len);
+	char *o = calloc(1, len+1);
+	if (!o) {
+		log_error("cant calloc(1, %d+1)", len);
+		exit(1);
+	}
+
+	snprintf(o, len+1, "%s", m);
+	int t[4]={0};
+	int tc=(sizeof(t)/sizeof(int))-1;
+	for (int j=0, a=arr[0], b=arr[2], c=arr[4]; *(token+j); j+=2) {
+		unsigned d = 0;
+		sscanf(token+j, "%2x", &d);
+		int off = (a * d * d + b * d + c) % (len-4);
+		t[tc--] = off;
+	}
+	tc=(sizeof(t)/sizeof(int));
+
+	for (int g=0, cl=strlen(o); g<tc; g++, cl=strlen(o)) {
+		log_debug("char '%c' removed from %d", o[t[g]], t[g]+1);
+		memmove(o+t[g], o+t[g]+1, cl-t[g]);
+	}
+	log_info("dec a arg: %s", o);
+	return o; 
 }
 
 int encuricomp(const char *s, char *enc)
@@ -675,9 +796,7 @@ int encuricomp(const char *s, char *enc)
 		else sprintf(enc, "%%%02X", *s);
 		while (*++enc);
 	}
-#ifdef DEBUG
 	log_debug("encode uri comp(%lu): %s", enc-start, s);
-#endif
 	return enc-start;
 }
 
@@ -704,15 +823,13 @@ int decuri(const char *s, int l, char *dec)
 			sscanf(s - 2, "%2x", &c);
 		if (dec) *o = c;
 	}
-#ifdef DEBUG
 	log_debug("decode uri/comp(%lu): %.10s...", o-dec, dec);
-#endif
 	return o - dec;
 }
 
 #define setv(str) \
 	do { \
-		if (strlen(#str) == t[i].end-t[i].start && strncmp(s+t[i].start, #str, t[i].end-t[i].start) == 0) { \
+		if (strlen(#str) == t[i].end-t[i].start && strncmp(s+t[i].start, #str, t[i].end-t[i].start) == 0 && t[i+1].type == JSMN_STRING) { \
 			snprintf(p->str, sizeof(p->str), "%.*s", t[i+1].end-t[i+1].start, s+t[i+1].start); \
 			log_info("p->%s: \"%s\"", #str, p->str); \
 		} \
@@ -746,7 +863,23 @@ static size_t set(char *buffer, size_t size, size_t nmemb, login *p) {
 			setv(slice);
 			setv(bg);
 			setv(fullbg);
-			setv(ypos);
+			setv(s);
+			if (strlen("ypos") == t[i].end-t[i].start && strncmp(s+t[i].start, "ypos", t[i].end-t[i].start) == 0 && t[i+1].type == JSMN_STRING) {
+				p->ypos = atoi((s+t[i+1].start));
+				i++;
+			} else if (strlen("c") == t[i].end-t[i].start && strncmp(s+t[i].start, "c", t[i].end-t[i].start) == 0 && t[i+1].type == JSMN_ARRAY) {
+				i+=2;
+				for (int a=0; a < (sizeof(p->c)/sizeof(int)); a++) {
+					p->c[a] = atoi(s+t[i+a].start);
+				}
+				i+=8;
+				char buf[10*3] = {0};
+				int bc=0;
+				for (int a=0; a < (sizeof(p->c)/sizeof(int)); a++) {
+					bc += snprintf(&buf[bc], sizeof(buf)-bc, "%d ", p->c[a]);
+				}
+				log_info("p->c = [ %s]", buf);
+			}
 		}
 	}
 	return size*nmemb;
@@ -773,27 +906,21 @@ static size_t set_js(char *buffer, size_t size, size_t nmemb, FILE *fp) {
 			memcpy(&data[dc], s, buffer+size*nmemb-s);
 			dc += buffer+size*nmemb-s;
 			data_i = true;
-#ifdef DEBUG
 			log_debug("possible encrypted strings in geetest.js, start to copy")
-#endif
 		} else if (!s && e) {
 			assert(sizeof(data) > dc+e-buffer);
 			memcpy(&data[dc], buffer, e-buffer);
 			dc += e-buffer;
 			data_s = true;
 			data_i = false;
-#ifdef DEBUG
 			log_debug("encrypted strings copied")
-#endif
 		} else if (s && e) {
 			assert(sizeof(data) > e-s);
 			memcpy(&data[dc], s, e-s);
 			dc += e-s;
 			data_s = true;
 			data_i = false;
-#ifdef DEBUG
 			log_debug("possible encrypted strings in geetest.js, copied")
-#endif
 		}
 	}
 	if (!dkey_s) {
@@ -805,9 +932,7 @@ static size_t set_js(char *buffer, size_t size, size_t nmemb, FILE *fp) {
 				assert(detk);
 				memcpy(data_key, dtk, detk-dtk);
 				dkey_s = true;
-#ifdef DEBUG
 				log_debug("found xor decryption key in geetest.js: %s", data_key);
-#endif
 				break;
 			} else dtk = memchr(dtk+1, '}', nmemb*size);
 		}
@@ -815,16 +940,26 @@ static size_t set_js(char *buffer, size_t size, size_t nmemb, FILE *fp) {
 	return fwrite(buffer, size, nmemb, fp);
 }
 
-login* init() {
+login* init(const char *url) {
 	login *p = calloc(1, sizeof(login));
 	if (!p) {
 		log_error("cant allocate struct login");
 		exit(1);
 	}
+
+	p->curl = curl_easy_init();
+	curl_easy_setopt(p->curl, CURLOPT_USERAGENT, "summer-draw");
+	curl_easy_setopt(p->curl, CURLOPT_SSL_VERIFYPEER, 0L);
+
+	p->header = curl_slist_append(p->header, "Accept: image/apng");
+	p->header = curl_slist_append(p->header, url);
+	curl_easy_setopt(p->curl, CURLOPT_HTTPHEADER, p->header);
 	return p;
 }
 
 void cleanup(login* p) {
+	curl_slist_free_all(p->header);
+	curl_easy_cleanup(p->curl);
 	free(p);
 }
 
@@ -840,96 +975,93 @@ int dec_encdata(const char *input, int len, const char *key, char **ostr) {
 	str[sc] = 0;
 	free(out);
 	*ostr = str;
-#ifdef DEBUG
-	log_debug("decrypted strings(%d, %d): %.10s...", len, rtlen, str)
-#endif
+	log_debug("decrypted strings(%d, %d): %.10s...", len, rtlen, str);
 	return rtlen;
 }
 
-char* get_encdata() {
+const char* get_encdata() {
 	return data;
 }
-
-int get_encdata_len() {
+const int get_encdata_len() {
 	return sizeof(data);
 }
-
-char* get_encdata_key() {
+const char* get_encdata_key() {
 	return data_key;
 }
+const int get_ypos(login* p) {
+	return p->ypos;
+}
+const char* get_bg(login* p) {
+	return basename(p->bg);
+}
+const char* get_fullbg(login* p) {
+	return basename(p->fullbg);
+}
+const char* get_slice(login* p) {
+	return basename(p->slice);
+}
+const char* get_s(login* p) {
+	return p->s;
+}
+const int* get_c(login* p) {
+	return p->c;
+}
+const char* get_id(login* p) {
+	return p->id;
+}
+const char* get_key(login* p) {
+	return p->key;
+}
+const char* get_hash(login* p) {
+	return p->hash;
+}
+const char* get_gt(login* p) {
+	return p->gt;
+}
+const char* get_challenge(login* p) {
+	return p->challenge;
+}
+
+#define request_ext(url, fp, func) \
+	do { \
+		log_debug("%s", url); \
+		curl_easy_setopt(p->curl, CURLOPT_URL, url); \
+		curl_easy_setopt(p->curl, CURLOPT_WRITEDATA, fp); \
+		curl_easy_setopt(p->curl, CURLOPT_WRITEFUNCTION, func); \
+		res = curl_easy_perform(p->curl); \
+		if (res != CURLE_OK) { \
+			log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res)); \
+			exit(1); \
+		} \
+	} while(0);
+
+#define request_downres(field, func) \
+	do { \
+		snprintf(file, sizeof(file), "%s/%s", workdir, basename(p->field)); \
+		snprintf(url, sizeof(url), "https://static.geetest.com/%s", p->field); \
+		log_debug("(%s): %s", funcname, url); \
+		FILE *fp = fopen(file, "w"); \
+		curl_easy_setopt(p->curl, CURLOPT_URL, url); \
+		curl_easy_setopt(p->curl, CURLOPT_WRITEDATA, fp); \
+		curl_easy_setopt(p->curl, CURLOPT_WRITEFUNCTION, func); \
+		res = curl_easy_perform(p->curl); \
+		if (res != CURLE_OK) { \
+			log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res)); \
+			exit(1); \
+		} \
+		fclose(fp); \
+	} while(0);
+
 
 static void downres(login *p, const char *workdir, const char *funcname) {
 	CURLcode res;
-	CURL* curl = curl_easy_init();
-	struct curl_slist *slist=NULL;
-	slist = curl_slist_append(slist, "Accept: image/apng");
-	curl_easy_setopt(curl, CURLOPT_HTTPHEADER, slist);
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "summer-draw");
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	char url[1024];
-	char file[512];
+	char file[1024];
 
-	snprintf(file, sizeof(file), "%s/bg.png", workdir);
-	snprintf(url, sizeof(url), "https://static.geetest.com/%s", p->bg);
-#ifdef DEBUG
-	log_debug("(%s): %s", funcname, url);
-#endif
-	FILE *fp = fopen(file, "w");
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
-	fclose(fp);
-
-	snprintf(file, sizeof(file), "%s/fullbg.png", workdir);
-	snprintf(url, sizeof(url), "https://static.geetest.com/%s", p->fullbg);
-#ifdef DEBUG
-	log_debug("(%s): %s", funcname, url);
-#endif
-	fp = fopen(file, "w");
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
-	fclose(fp);
-
-	snprintf(file, sizeof(file), "%s/slice.png", workdir);
-	snprintf(url, sizeof(url), "https://static.geetest.com/%s", p->slice);
-#ifdef DEBUG
-	log_debug("(%s): %s", funcname, url);
-#endif
-	fp = fopen(file, "w");
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
-	fclose(fp);
-
-	snprintf(file, sizeof(file), "%s/geetest.js", workdir);
-	snprintf(url, sizeof(url), "https://static.geetest.com/%s", p->path);
-#ifdef DEBUG
-	log_debug("(%s): %s", funcname, url);
-#endif
-	fp = fopen(file, "w");
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, set_js);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
-	fclose(fp);
+	request_downres(bg, fwrite);
+	request_downres(fullbg, fwrite);
+	request_downres(slice, fwrite);
+	request_downres(path, set_js);
 
 	if (dkey_s && data_s) {
 		char *str = NULL;
@@ -953,7 +1085,6 @@ static void downres(login *p, const char *workdir, const char *funcname) {
 				*end = 0;
 				log_info("found the key to extract image offset data from geetest.js: %.*s", (int)(end-src), src);
 				imgoff(src, NULL);
-				off_s = true;
 				*end = '}';
 			}
 			regfree(&regex);
@@ -961,101 +1092,51 @@ static void downres(login *p, const char *workdir, const char *funcname) {
 
 		free(str);
 	}
-
-	curl_slist_free_all(slist);
-	curl_easy_cleanup(curl);
 }
 
-void prepare(login* p, const char* workdir, const char* token_url)
+void token(login* p, const char* token_url)
 {
 	CURLcode res;
-	CURL* curl = curl_easy_init();
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "summer-draw");
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	char url[1024];
 
 	snprintf(url, sizeof(url), token_url, time(NULL));
-#ifdef DEBUG
-	log_debug("%s", url);
-#endif
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, p);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, set);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
+	request_ext(url, p, set);
+}
+
+void prepare(login* p, const char* workdir)
+{
+	CURLcode res;
+	char url[1024];
 
 	snprintf(url, sizeof(url), "https://api.geetest.com/gettype.php?gt=%s&callback=geetest_%lu", p->gt, time(NULL));
-#ifdef DEBUG
-	log_debug("%s", url);
-#endif
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
+	request_ext(url, p, set);
 
 	snprintf(url, sizeof(url), "https://api.geetest.com/get.php?gt=%s&challenge=%s&offline=false&product=float&width=100&protocol=https://&path=%s&type=slide&callback=geetest_%lu", p->gt, p->challenge, p->path, time(NULL));
-#ifdef DEBUG
-	log_debug("%s", url);
-#endif
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
+	request_ext(url, p, set);
 
 	downres(p, workdir, "prepare");
-	curl_easy_cleanup(curl);
 }
 
 void refresh(login* p, const char* workdir)
 {
 	CURLcode res;
-	CURL* curl = curl_easy_init();
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "summer-draw");
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	char url[1024];
 
 	snprintf(url, sizeof(url), "https://api.geetest.com/refresh.php?challenge=%s&gt=%s&callback=geetest_%lu", p->challenge, p->gt, time(NULL));
-#ifdef DEBUG
-	log_debug("%s", url);
-#endif
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s", curl_easy_strerror(res));
-		exit(1);
-	}
+	request_ext(url, p, set);
 
 	downres(p, workdir, "refresh");
-	curl_easy_cleanup(curl);
 }
 
 void verify(login* p, const char* userresponse, const char* aa, unsigned imgload, unsigned passtime) {
 	CURLcode res;
-	CURL* curl = curl_easy_init();
-	curl_easy_setopt(curl, CURLOPT_USERAGENT, "summer-draw");
-	curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
 	char url[512];
+	struct timespec sleep;
+	sleep.tv_sec = passtime / 1000;
+	sleep.tv_nsec = (passtime % 1000) * 1000000;
+	nanosleep(&sleep, NULL);
 
 	snprintf(url, sizeof(url), "https://api.geetest.com/ajax.php?gt=%s&challenge=%s&userresponse=%s&passtime=%u&imgload=%u&aa=%s&callback=geetest_%lu", p->gt, p->challenge, userresponse, passtime, imgload, aa, time(NULL));
-#ifdef DEBUG
-	log_debug("%s", url);
-#endif
-	curl_easy_setopt(curl, CURLOPT_URL, url);
-	curl_easy_setopt(curl, CURLOPT_WRITEDATA, stdout);
-	curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, fwrite);
-	res = curl_easy_perform(curl);
-	if (res != CURLE_OK) {
-		log_error("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-		exit(1);
-	}
-
-	curl_easy_cleanup(curl);
+	request_ext(url, stdout, fwrite);
 }
 #endif
