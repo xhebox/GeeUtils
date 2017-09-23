@@ -44,7 +44,7 @@ char s[14]={0};
 int c[9]={0};
 
 static void help() {
-		fprintf(stderr, "usage: -i in -o out -gt .. -challenge .. -xpos .. -ypos .. -c .. -s .. -[q/qq] -[diff/serialize/undiff/unserialize/enc_xpos/enc_mouse/_dec_mouse/fake_mouse/recover_img/find_xpos]\n");
+		fprintf(stderr, "usage: -i in -o out -gt .. -challenge .. -xpos .. -ypos .. -c .. -s .. -[q/qq] -[diff/serialize/undiff/unserialize/enc_xpos/enc_mouse/dec_mouse/fake_mouse/recover_img/find_xpos]\n");
 }
 
 int main(int argc, char *arg[]) {
@@ -139,10 +139,10 @@ int main(int argc, char *arg[]) {
 	}
 
 	int e[MAX_MOUSE_DATA_COUNT][3];
-	int a = 0;
 	switch(action) {
 	case 0:
 		{
+			int a = 0;
 			for(;fscanf(in, "%d,%d,%d", &e[a][0], &e[a][1], &e[a][2]) == 3;a++);
 			int (*o)[3];
 			int len = diff_mouse(&e[0], a, &o);
@@ -152,6 +152,7 @@ int main(int argc, char *arg[]) {
 		}
 	case 1:
 		{
+			int a = 0;
 			for(;fscanf(in, "%d,%d,%d", &e[a][0], &e[a][1], &e[a][2]) == 3;a++);
 			char *str = serialize_mouse(&e[0], a);
 			fprintf(out, "%s\n", str);
@@ -160,6 +161,7 @@ int main(int argc, char *arg[]) {
 		}
 	case 2:
 		{
+			int a = 0;
 			for(;fscanf(in, "%d,%d,%d", &e[a][0], &e[a][1], &e[a][2]) == 3;a++);
 			int (*o)[3];
 			int len = undiff_mouse(&e[0], a, &o);

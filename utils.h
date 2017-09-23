@@ -587,7 +587,6 @@ char* serialize_mouse(int (*f)[3], int count) {
 
 	for (int j=0; j < count; j++) {
 		char b = e(&f[j][0]);
-		const char *start = g;
 		int sg = gc;
 		int sh = hc;
 		int si = ic;
@@ -597,16 +596,14 @@ char* serialize_mouse(int (*f)[3], int count) {
 			log_debug("h.push('%c')", b);
 		} else {
 			d(f[j][0], g, &gc);
-			log_debug("g.push(d(f[%d][0]) -> %.*s)", j, gc-sg, start);
-			start = h;
+			log_debug("g.push(d(f[%d][0] == %d) -> %.*s)", j, f[j][0], gc-sg, &g[sg]);
 
 			d(f[j][1], h, &hc);
-			log_debug("h.push(d(f[%d][0]) -> %.*s)", j, hc-sh, start);
-			start = i;
+			log_debug("h.push(d(f[%d][1] == %d) -> %.*s)", j, f[j][1], hc-sh, &h[sh]);
 		}
 
 		d(f[j][2], i, &ic);
-		log_debug("i.push(d(f[%d][2]) -> %.*s)", j, ic-si, start);
+		log_debug("i.push(d(f[%d][2] == %d) -> %.*s)", j, f[j][2], ic-si, &i[si]);
 	}
 	char *r = calloc(1, gc+hc+ic+5);
 	if (!r) {
