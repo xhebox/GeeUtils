@@ -1,6 +1,7 @@
 .PHONY: test cli
 
-CFLAGS := -DDEBUG -Wall
+CFLAGS := -DDEBUG -Wall -std=c11 -D_GNU_SOURCE
+LDFLAGS := -lm
 
 all: test cli
 

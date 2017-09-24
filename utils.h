@@ -271,7 +271,7 @@ int find_xpos(int ypos, const char *bgp, const char *fbgp, const char *slp, cons
 
 
 	int bg_w=0, bg_h=0, bg_n=0;
-	uint8_t *r = stbi_load(bg_path, &bg_w, &bg_h, &bg_n, 3), (*bg)[bg_w][bg_n] = (typeof(bg))r;
+	uint8_t *r = stbi_load(bg_path, &bg_w, &bg_h, &bg_n, 3), (*bg)[bg_w][bg_n] = r;
 	if (!r) {
 		log_error("can not load image %s", bg_path);
 		return -1;
@@ -288,7 +288,7 @@ int find_xpos(int ypos, const char *bgp, const char *fbgp, const char *slp, cons
 
 	int fbg_w=0, fbg_h=0, fbg_n=0;
 	r = stbi_load(fbg_path, &fbg_w, &fbg_h, &fbg_n, 3);
-	uint8_t	(*fbg)[fbg_w][fbg_n] = (typeof(fbg))r;
+	uint8_t	(*fbg)[fbg_w][fbg_n] = r;
 	if (!r) {
 		log_error("can not load image %s", fbg_path);
 		return -1;
@@ -304,7 +304,7 @@ int find_xpos(int ypos, const char *bgp, const char *fbgp, const char *slp, cons
 
 	int slice_w=0, slice_h=0, slice_n=0;
 	r = stbi_load(slice_path, &slice_w, &slice_h, &slice_n, 4);
-	uint8_t (*slice)[slice_w][slice_n] = (typeof(slice))r;
+	uint8_t (*slice)[slice_w][slice_n] = r;
 	if (!slice) {
 		log_error("can not load image %s", slice_path);
 		return -1;
